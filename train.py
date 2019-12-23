@@ -16,11 +16,14 @@ from utils import CTCLabelConverter, AttnLabelConverter, Averager
 from dataset import hierarchical_dataset, AlignCollate, Batch_Balanced_Dataset
 from model import Model
 from test import validation
+from torch.utils.tensorboard import SummaryWriter
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def train(opt):
+    """ tensorboard writer """
+    writer = SummaryWriter()
     """ dataset preparation """
     if not opt.data_filtering_off:
         print('Filtering the images containing characters which are not in opt.character')
@@ -128,6 +131,8 @@ def train(opt):
     best_norm_ED = 1e+6
     i = start_iter
 
+    writer.close()
+
     while (True):
         # train part
         image_tensors, labels = train_dataset.get_batch()
@@ -163,6 +168,7 @@ def train(opt):
         optimizer.step()
 
         loss_avg.add(cost)
+        writer.add_scalar('train_loss', loss_avg.val(), i)
 
         # validation part
         if i % opt.valInterval == 0:
@@ -176,6 +182,8 @@ def train(opt):
                 model.train()
 
                 # training loss and validation loss
+                writer.add_scalar('valid_loss', valid_loss, i)
+                writer.add_scalar('elapsed_time', elapsed_time, i)
                 loss_log = f'[{i}/{opt.num_iter}] Train loss: {loss_avg.val():0.5f}, Valid loss: {valid_loss:0.5f}, Elapsed_time: {elapsed_time:0.5f}'
                 print(loss_log)
                 log.write(loss_log + '\n')
