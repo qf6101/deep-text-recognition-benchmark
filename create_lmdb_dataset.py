@@ -6,6 +6,11 @@ import lmdb
 import cv2
 
 import numpy as np
+from pathlib import Path
+from concurrent.futures.process import ProcessPoolExecutor
+from concurrent.futures.thread import ThreadPoolExecutor
+import concurrent
+import shutil
 
 
 def checkImageIsValid(imageBin):
@@ -19,13 +24,44 @@ def checkImageIsValid(imageBin):
     return True
 
 
-def writeCache(env, cache):
+def writeCache( env, cache):
     with env.begin(write=True) as txn:
         for k, v in cache.items():
             txn.put(k, v)
 
 
-def createDataset(inputPath, gtFile, outputPath, checkValid=True):
+def loadData(tag, gtD, checkValid):
+    vocab = set()
+    cache = {}
+    cnt = 0
+    imgDir = gtD.parent / (str(gtD.stem)[:-2] + 'img')
+    for gtF in gtD.glob('*'):
+        imgF = imgDir / (str(gtF.stem) + '.png')
+        if gtF.exists() and imgF.exists():
+            with open(str(gtF), 'r') as f:
+                label = f.readline().split(',')[-2][1:-1]
+            with open(str(imgF), 'rb') as f:
+                imageBin = f.read()
+            if checkValid:
+                try:
+                    if not checkImageIsValid(imageBin):
+                        print('%s is not a valid image' % str(imgF))
+                        continue
+                except:
+                    print('error occured', str(imgF))
+                    continue
+
+            imageKey = 'image-{}'.format(gtF.stem).encode()
+            labelKey = 'label-{}'.format(gtF.stem).encode()
+            cache[imageKey] = imageBin
+            cache[labelKey] = label.encode()
+            cnt += 1
+            for i in label:
+                vocab.add(i)
+    return tag, cnt, cache, vocab
+
+
+def createDataset_v2(inputPath, outputPath, checkValid=True, max_workers=50):
     """
     Create LMDB dataset for training and evaluation.
     ARGS:
@@ -33,55 +69,133 @@ def createDataset(inputPath, gtFile, outputPath, checkValid=True):
         outputPath : LMDB output path
         gtFile     : list of image path and label
         checkValid : if true, check the validity of every image
+
+        params: --inputPath /datadisk2/qfeng/ocr_synthesis/number_outp --outputPath /datadisk2/qfeng/ocr_synthesis/number_lmdb
     """
-    os.makedirs(outputPath, exist_ok=True)
+    fonts = ['simsun', 'heiti', 'lishu', 'fangsong']
+
+    if Path(outputPath).exists():
+        shutil.rmtree(outputPath)
+        print('Remove exist {}'.format(str(outputPath)))
+    os.makedirs(outputPath)
+    print('Create {}'.format(str(outputPath)))
     env = lmdb.open(outputPath, map_size=1099511627776)
-    cache = {}
-    cnt = 1
+    inputPath = Path(inputPath)
+    nSamples = 0
+    vocab = set()
 
-    with open(gtFile, 'r', encoding='utf-8') as data:
-        datalist = data.readlines()
+    tasks = [(p, checkValid, font) for font in fonts for p in (inputPath / font).glob('*') if p.stem.endswith('gt')]
 
-    nSamples = len(datalist)
-    for i in range(nSamples):
-        imagePath, label = datalist[i].strip('\n').split('\t')
-        imagePath = os.path.join(inputPath, imagePath)
+    with ProcessPoolExecutor(max_workers=max_workers) as ex, ThreadPoolExecutor(max_workers=max_workers) as tx:
 
-        # # only use alphanumeric data
-        # if re.search('[^a-zA-Z0-9]', label):
-        #     continue
+        futures = []
+        for i, t in enumerate(tasks, 1):
+            futures.append(ex.submit(loadData, t[2], t[0], t[1]))
+            if i % max_workers == 0:
+                cnt = 0
+                subCaches = []
+                for future in concurrent.futures.as_completed(futures):
+                    tag, subCnt, subCache, subVocab = future.result()
+                    cnt = cnt + subCnt
+                    subCaches.append(subCache)
+                    vocab = vocab.union(subVocab)
+                    print('task={} reads n_samples={} tag={}'.format(i, subCnt, tag))
 
-        if not os.path.exists(imagePath):
-            print('%s does not exist' % imagePath)
-            continue
-        with open(imagePath, 'rb') as f:
-            imageBin = f.read()
-        if checkValid:
-            try:
-                if not checkImageIsValid(imageBin):
-                    print('%s is not a valid image' % imagePath)
-                    continue
-            except:
-                print('error occured', i)
-                with open(outputPath + '/error_image_log.txt', 'a') as log:
-                    log.write('%s-th image data occured error\n' % str(i))
-                continue
+                nSamples = nSamples + cnt
+                for _ in concurrent.futures.as_completed([tx.submit(writeCache, env, c) for c in subCaches]):
+                    print('task={} writes n_samples={}'.format(i, cnt//len(futures)))
 
-        imageKey = 'image-%09d'.encode() % cnt
-        labelKey = 'label-%09d'.encode() % cnt
-        cache[imageKey] = imageBin
-        cache[labelKey] = label.encode()
+        if len(futures) > 0:
+            cnt = 0
+            subCaches = []
+            for future in concurrent.futures.as_completed(futures):
+                tag, subCnt, subCache, subVocab = future.result()
+                cnt = cnt + subCnt
+                subCaches.append(subCache)
+                vocab = vocab.union(subVocab)
+                print('task={} reads n_samples={} gtD={}'.format('last', subCnt, tag))
 
-        if cnt % 1000 == 0:
-            writeCache(env, cache)
-            cache = {}
-            print('Written %d / %d' % (cnt, nSamples))
-        cnt += 1
-    nSamples = cnt-1
-    cache['num-samples'.encode()] = str(nSamples).encode()
+            nSamples = nSamples + cnt
+            for _ in concurrent.futures.as_completed([tx.submit(writeCache, env, c) for c in subCaches]):
+                print('task={} writes n_samples={}'.format('last', cnt//len(futures)))
+
+    cache = {'num-samples'.encode(): str(nSamples).encode()}
     writeCache(env, cache)
+
+    with open(str(inputPath / 'vocabulary.txt'), 'w') as f:
+        for v in vocab:
+            f.write(v + '\n')
+
+    print('Created dataset with %d samples' % nSamples)
+
+
+def createDataset_v3(rootInputPath, outputPath, checkValid=True, max_workers=50):
+    """
+    Create LMDB dataset for training and evaluation.
+    ARGS:
+        inputPath  : input folder path where starts imagePath
+        outputPath : LMDB output path
+        gtFile     : list of image path and label
+        checkValid : if true, check the validity of every image
+
+        params: --rootInputPath /datadisk2/qfeng/ocr_synthesis --outputPath /datadisk2/qfeng/ocr_synthesis/all_lmdb
+    """
+    if Path(outputPath).exists():
+        shutil.rmtree(outputPath)
+        print('Remove exist {}'.format(str(outputPath)))
+    os.makedirs(outputPath)
+    print('Create {}'.format(str(outputPath)))
+    env = lmdb.open(outputPath, map_size=1099511627776)
+    nSamples = 0
+    vocab = set()
+
+    fonts = ['simsun']
+    for inputPath in ['number_outp']:
+        inputPath = Path(os.path.join(rootInputPath, inputPath))
+        tasks = [(p, checkValid, font) for font in fonts for p in (inputPath / font).glob('*') if p.stem.endswith('gt')]
+
+        with ProcessPoolExecutor(max_workers=max_workers) as ex, ThreadPoolExecutor(max_workers=max_workers) as tx:
+
+            futures = []
+            for i, t in enumerate(tasks, 1):
+                futures.append(ex.submit(loadData, str(inputPath.stem) + '_' + t[2], t[0], t[1]))
+                if i % max_workers == 0:
+                    cnt = 0
+                    subCaches = []
+                    for future in concurrent.futures.as_completed(futures):
+                        tag, subCnt, subCache, subVocab = future.result()
+                        cnt = cnt + subCnt
+                        subCaches.append(subCache)
+                        vocab = vocab.union(subVocab)
+                        print('task={} reads n_samples={} tag={}'.format(i, subCnt, tag))
+
+                    nSamples = nSamples + cnt
+                    for _ in concurrent.futures.as_completed([tx.submit(writeCache, env, c) for c in subCaches]):
+                        print('task={} writes n_samples={} font={}'.format(i, cnt//len(futures), t[2]))
+
+            if len(futures) > 0:
+                cnt = 0
+                subCaches = []
+                for future in concurrent.futures.as_completed(futures):
+                    tag, subCnt, subCache, subVocab = future.result()
+                    cnt = cnt + subCnt
+                    subCaches.append(subCache)
+                    vocab = vocab.union(subVocab)
+                    print('task={} reads n_samples={} tag={}'.format('last', subCnt, tag))
+
+                nSamples = nSamples + cnt
+                for _ in concurrent.futures.as_completed([tx.submit(writeCache, env, c) for c in subCaches]):
+                    print('task={} writes n_samples={}'.format('last', cnt//len(futures)))
+
+    cache = {'num-samples'.encode(): str(nSamples).encode()}
+    writeCache(env, cache)
+
+    with open(str(inputPath / 'vocabulary.txt'), 'w') as f:
+        for v in vocab:
+            f.write(v + '\n')
+
     print('Created dataset with %d samples' % nSamples)
 
 
 if __name__ == '__main__':
-    fire.Fire(createDataset)
+    fire.Fire(createDataset_v3)

@@ -16,6 +16,7 @@ from utils import CTCLabelConverter, AttnLabelConverter, Averager
 from dataset import hierarchical_dataset, AlignCollate, Batch_Balanced_Dataset
 from model import Model
 from test import validation
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
@@ -127,7 +128,7 @@ def train(opt):
     best_norm_ED = 1e+6
     i = start_iter
 
-    while(True):
+    while (True):
         # train part
         image_tensors, labels = train_dataset.get_batch()
         image = image_tensors.to(device)
@@ -212,7 +213,7 @@ def train(opt):
         # save model per 1e+5 iter.
         if (i + 1) % 1e+5 == 0:
             torch.save(
-                model.state_dict(), f'./saved_models/{opt.experiment_name}/iter_{i+1}.pth')
+                model.state_dict(), f'./saved_models/{opt.experiment_name}/iter_{i + 1}.pth')
 
         if i == opt.num_iter:
             print('end the training')
@@ -263,6 +264,7 @@ if __name__ == '__main__':
     parser.add_argument('--output_channel', type=int, default=512,
                         help='the number of output channel of Feature extractor')
     parser.add_argument('--hidden_size', type=int, default=256, help='the size of the LSTM hidden state')
+    parser.add_argument('--vocab_file', type=str, default='', help='vocabulary file')
 
     opt = parser.parse_args()
 
@@ -274,7 +276,10 @@ if __name__ == '__main__':
     os.makedirs(f'./saved_models/{opt.experiment_name}', exist_ok=True)
 
     """ vocab / character number configuration """
-    if opt.sensitive:
+    if opt.vocab_file:
+        with open(opt.vocab_file, 'r') as f:
+            opt.character = ''.join([line.strip('\n') for line in f.readlines()])
+    elif opt.sensitive:
         # opt.character += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
         opt.character = string.printable[:-6]  # same with ASTER setting (use 94 char).
 

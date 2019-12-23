@@ -47,8 +47,10 @@ class Batch_Balanced_Dataset(object):
             indices = range(total_number_dataset)
             _dataset, _ = [Subset(_dataset, indices[offset - length:offset])
                            for offset, length in zip(_accumulate(dataset_split), dataset_split)]
-            print(f'num total samples of {selected_d}: {total_number_dataset} x {opt.total_data_usage_ratio} (total_data_usage_ratio) = {len(_dataset)}')
-            print(f'num samples of {selected_d} per batch: {opt.batch_size} x {float(batch_ratio_d)} (batch_ratio) = {_batch_size}')
+            print(
+                f'num total samples of {selected_d}: {total_number_dataset} x {opt.total_data_usage_ratio} (total_data_usage_ratio) = {len(_dataset)}')
+            print(
+                f'num samples of {selected_d} per batch: {opt.batch_size} x {float(batch_ratio_d)} (batch_ratio) = {_batch_size}')
             batch_size_list.append(str(_batch_size))
             Total_batch_size += _batch_size
 
@@ -90,7 +92,7 @@ def hierarchical_dataset(root, opt, select_data='/'):
     """ select_data='/' contains all sub-directory of root directory """
     dataset_list = []
     print(f'dataset_root:    {root}\t dataset: {select_data[0]}')
-    for dirpath, dirnames, filenames in os.walk(root+'/'):
+    for dirpath, dirnames, filenames in os.walk(root + '/'):
         if not dirnames:
             select_flag = False
             for selected_d in select_data:
@@ -99,7 +101,8 @@ def hierarchical_dataset(root, opt, select_data='/'):
                     break
 
             if select_flag:
-                dataset = LmdbDataset(dirpath, opt)
+                # dataset = LmdbDataset(dirpath, opt)
+                dataset = RawDataset_v2(dirpath, opt)
                 print(f'sub-directory:\t/{os.path.relpath(dirpath, root)}\t num samples: {len(dataset)}')
                 dataset_list.append(dataset)
 
@@ -192,6 +195,43 @@ class LmdbDataset(Dataset):
             label = re.sub(out_of_char, '', label)
 
         return (img, label)
+
+
+class RawDataset_v2(Dataset):
+
+    def __init__(self, root, opt):
+        self.opt = opt
+        self.data = []
+
+        print('Loading gt file...')
+
+        with open(os.path.join(root, 'gt.txt'), 'r') as f:
+            for line in f.readlines():
+                splits = line.strip('\n').split(',')
+                if len(splits) != 2:
+                    print('Invalid gt line {}'.format(line.strip('\n')))
+                else:
+                    self.data.append(('/' + splits[0], splits[1]))
+
+        self.nSamples = len(self.data)
+        print('Finish loading.')
+
+    def __len__(self):
+        return self.nSamples
+
+    def __getitem__(self, index):
+
+        try:
+            if self.opt.rgb:
+                img = Image.open(self.data[index][0]).convert('RGB')  # for color image
+            else:
+                img = Image.open(self.data[index][0]).convert('L')
+
+        except IOError:
+            print(f'Corrupted image for {index}')
+
+        label = self.data[index][1]
+        return img, label
 
 
 class RawDataset(Dataset):
