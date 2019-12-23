@@ -197,6 +197,7 @@ def train(opt):
                 if current_accuracy > best_accuracy:
                     best_accuracy = current_accuracy
                     torch.save(model.state_dict(), f'./saved_models/{opt.experiment_name}/best_accuracy.pth')
+
                 if current_norm_ED < best_norm_ED:
                     best_norm_ED = current_norm_ED
                     torch.save(model.state_dict(), f'./saved_models/{opt.experiment_name}/best_norm_ED.pth')
@@ -290,6 +291,10 @@ if __name__ == '__main__':
     elif opt.sensitive:
         # opt.character += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
         opt.character = string.printable[:-6]  # same with ASTER setting (use 94 char).
+
+    import pickle
+    with open(f'./saved_models/{opt.experiment_name}/opt.pkl', 'wb') as f:
+        pickle.dump(opt, f)
 
     """ Seed and GPU setting """
     # print("Random Seed: ", opt.manualSeed)
